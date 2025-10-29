@@ -1,83 +1,86 @@
 const tl = require('azure-pipelines-task-lib/task');
 const utils = require('@jfrog/tasks-utils/utils.js');
-const fs = require('fs');
+const fs = require('fs').promises;
 
-let serverId;
-RunJfrogCliCommand(RunTaskCbk);
-
-function RunJfrogCliCommand(RunTaskCbk) {
-    // If no custom version requested, run with the version of the rest of the pipeline.
-    if (!tl.getBoolInput('useCustomVersion')) {
-        utils.executeCliTask(RunTaskCbk);
-        return;
-    }
-    let cliVersion = tl.getInput('cliVersion', true);
-
-    // Custom version selected, but placeholder provided.
-    if (cliVersion.localeCompare('$(jfrogCliVersion)') === 0) {
-        utils.executeCliTask(RunTaskCbk);
-        return;
-    }
-
-    // If the min version allowed is higher than the requested version we will fail the task.
-    if (utils.compareVersions(utils.minCustomCliVersion, cliVersion) > 0) {
-        tl.setResult(tl.TaskResult.Failed, 'Custom JFrog CLI Version must be at least ' + utils.minCustomCliVersion);
-        return;
-    }
-    utils.executeCliTask(RunTaskCbk, cliVersion);
-}
-
-function RunTaskCbk(cliPath) {
-    let defaultWorkDir = tl.getVariable('System.DefaultWorkingDirectory');
-    if (!defaultWorkDir) {
-        tl.setResult(tl.TaskResult.Failed, 'Failed getting default working directory.');
-        return;
-    }
-
-    // Determine working directory for the cli.
-    let inputWorkingDirectory = tl.getInput('workingDirectory', false);
-    let requiredWorkDir = utils.determineCliWorkDir(defaultWorkDir, inputWorkingDirectory);
-    if (!fs.existsSync(requiredWorkDir) || !fs.lstatSync(requiredWorkDir).isDirectory()) {
-        tl.setResult(tl.TaskResult.Failed, "Provided 'Working Directory': " + requiredWorkDir + ' neither exists nor a directory.');
-        return;
-    }
-
-    // Set default build name and number environment variables
-    process.env.JFROG_CLI_BUILD_NAME = tl.getVariable('Build.DefinitionName');
-    process.env.JFROG_CLI_BUILD_NUMBER = tl.getVariable('Build.BuildNumber');
-
-    serverId = utils.assembleUniqueServerId('jfrog_cli_cmd');
-    utils.configureDefaultJfrogServer(serverId, cliPath, requiredWorkDir);
-
-    let cliCommandsList = tl.getInput('command', true).split('\n');
+(async function run() {
+    let serverId;
     try {
+        await runJfrogCliCommand(runTaskCbk);
+        tl.setResult(tl.TaskResult.Succeeded, 'Command Succeeded.');
+    } catch (err) {
+        tl.setResult(tl.TaskResult.Failed, err.message || err);
+    } finally {
+        if (serverId) utils.taskDefaultCleanup(null, null, [serverId]);
+    }
+
+    async function runJfrogCliCommand(runTaskCbk) {
+        // If no custom version requested, run with the version of the rest of the pipeline.
+        if (!tl.getBoolInput('useCustomVersion')) {
+            return utils.executeCliTask(runTaskCbk);
+        }
+
+        const cliVersion = tl.getInput('cliVersion', true);
+        if (cliVersion.localeCompare('$(jfrogCliVersion)') === 0) {
+            return utils.executeCliTask(runTaskCbk);
+        }
+
+        if (utils.compareVersions(utils.minCustomCliVersion, cliVersion) > 0) {
+            throw new Error('Custom JFrog CLI Version must be at least ' + utils.minCustomCliVersion);
+        }
+
+        return utils.executeCliTask(runTaskCbk, cliVersion);
+    }
+
+    async function validateWorkDir(requiredWorkDir) {
+        try {
+            const stat = await fs.lstat(requiredWorkDir);
+            if (!stat.isDirectory()) {
+                throw new Error(`Provided 'Working Directory': ${requiredWorkDir} is not a directory.`);
+            }
+        } catch (err) {
+            if (err.code === 'ENOENT') {
+                throw new Error(`Provided 'Working Directory': ${requiredWorkDir} does not exist.`);
+            }
+            throw new Error(`Failed to access working directory '${requiredWorkDir}': ${err.message}`);
+        }
+    }
+
+    async function runTaskCbk(cliPath) {
+        const defaultWorkDir = tl.getVariable('System.DefaultWorkingDirectory');
+        if (!defaultWorkDir) throw new Error('Failed getting default working directory.');
+
+        // Determine working directory for the cli.
+        const inputWorkingDirectory = tl.getInput('workingDirectory', false);
+        const requiredWorkDir = utils.determineCliWorkDir(defaultWorkDir, inputWorkingDirectory);
+        await validateWorkDir(requiredWorkDir);
+
+        // Set default build name and number environment variables
+        process.env.JFROG_CLI_BUILD_NAME = tl.getVariable('Build.DefinitionName');
+        process.env.JFROG_CLI_BUILD_NUMBER = tl.getVariable('Build.BuildNumber');
+
+        serverId = utils.assembleUniqueServerId('jfrog_cli_cmd');
+        await utils.configureDefaultJfrogServer(serverId, cliPath, requiredWorkDir);
+
+        const cliCommandsList = tl.getInput('command', true).split('\n');
         for (let cliCommand of cliCommandsList) {
             cliCommand = cliCommand.trim();
             if (!cliCommand.startsWith(utils.jfrogCliToolName + ' ')) {
-                tl.setResult(
-                    tl.TaskResult.Failed,
-                    "Unexpected JFrog CLI command prefix. Expecting the command to start with 'jf '. The command received is: " + cliCommand,
-                );
-                utils.taskDefaultCleanup(cliPath, requiredWorkDir, [serverId]);
-                return;
+                throw new Error(`Unexpected JFrog CLI command prefix. Expecting the command to start with 'jf '. Received: ${cliCommand}`);
             }
-            // Remove 'jf' and space from the beginning of the command string, so we can use the CLI's path
+
             cliCommand = cliCommand.slice(utils.jfrogCliToolName.length + 1);
             cliCommand = utils.cliJoin(cliPath, cliCommand);
+
             if (utils.isServerIdEnvSupported()) {
-                // Provide Server ID to JFrog CLI via environment variable
                 process.env.JFROG_CLI_SERVER_ID = serverId;
             } else {
-                // Provide Server ID to JFrog CLI via --server-id flag
                 cliCommand = utils.addServerIdOption(cliCommand, serverId);
             }
-            // Execute the cli command.
-            utils.executeCliCommand(cliCommand, requiredWorkDir);
+
+            // Execute the cli command asynchronously (if utils supports async)
+            await utils.executeCliCommandAsync(cliCommand, requiredWorkDir);
         }
-    } catch (executionException) {
-        tl.setResult(tl.TaskResult.Failed, executionException);
-    } finally {
-        utils.taskDefaultCleanup(cliPath, requiredWorkDir, [serverId]);
+
+        await utils.taskDefaultCleanup(cliPath, requiredWorkDir, [serverId]);
     }
-    tl.setResult(tl.TaskResult.Succeeded, 'Command Succeeded.', cliPath);
-}
+})();

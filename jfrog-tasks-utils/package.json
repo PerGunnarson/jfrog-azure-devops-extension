@@ -11,7 +11,10 @@
         "azure-pipelines-task-lib": "4.5.0",
         "azure-pipelines-tasks-java-common": "^2.219.1",
         "azure-pipelines-tool-lib": "2.0.6",
-        "typed-rest-client": "^1.8.11"
+        "typed-rest-client": "^1.8.11",
+        "node-fetch": "^2.7.0",
+        "https-proxy-agent": "^7.0.5",
+        "http-proxy-agent": "^7.0.2"
     },
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1"

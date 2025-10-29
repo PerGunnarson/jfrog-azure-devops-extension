@@ -1,16 +1,20 @@
-const fs = require('fs');
+const fs = require('fs').promises;
+const { spawn } = require('child_process');
 const tl = require('azure-pipelines-task-lib/task');
 const { join, sep, isAbsolute } = require('path');
-const execSync = require('child_process').execSync;
+const execSync = require('child_process').execSync; // TODO: Replace remaining usage with async alternatives
 const toolLib = require('azure-pipelines-tool-lib/tool');
 const credentialsHandler = require('typed-rest-client/Handlers');
 const findJavaHome = require('azure-pipelines-tasks-java-common/java-common').findJavaHome;
-const syncRequest = require('sync-request');
 const semver = require('semver');
 const fileName = getCliExecutableName();
 const jfrogCliToolName = 'jf';
 const cliPackage = 'jfrog-cli-' + getArchitecture();
 const defaultJfrogCliVersion = '2.81.0';
+
+const fetch = require("node-fetch");
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const { HttpProxyAgent } = require('http-proxy-agent');
 
 /**
  * Safely constructs the JFrog tools directory path, handling potential issues with Agent.ToolsDirectory
@@ -34,6 +38,18 @@ const minSupportedServerIdEnvCliVersion = '2.37.0';
 const minSupportedOidcCliVersion = '2.75.0';
 const pluginVersion = '2.12.2';
 const buildAgent = 'jfrog-azure-devops-extension';
+
+/**
+ * Check if folder exists asynchronously 
+ */
+async function existsAsync(path) {
+    try {
+        await fs.access(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 /**
  * Get the custom folder path, dynamically calculated based on current jfrogFolderPath
@@ -71,6 +87,7 @@ let runTaskCbk = null;
 module.exports = {
     executeCliTask: executeCliTask,
     executeCliCommand: executeCliCommand,
+    executeCliCommandAsync: executeCliCommandAsync,
     downloadCli: downloadCli,
     cliJoin: cliJoin,
     quote: quote,
@@ -118,6 +135,7 @@ module.exports = {
     jfrogCliToolName: jfrogCliToolName,
     isServerIdEnvSupported: isServerIdEnvSupported,
     setJdkHomeForJavaTasks: setJdkHomeForJavaTasks,
+    existsAsync: existsAsync,
 };
 
 /**
@@ -261,6 +279,51 @@ function executeCliCommand(cliCommand, runningDir, options = {}) {
 }
 
 /**
+ * Asynchronous version of executeCliCommand using spawn instead of execSync
+ */
+async function executeCliCommandAsync(cliCommand, runningDir, options = {}) {
+    if (!(await existsAsync(runningDir))) {
+        throw new Error("JFrog CLI execution path doesn't exist: " + runningDir);
+    }
+    if (!cliCommand) {
+        throw new Error('Cannot execute empty Cli command.');
+    }
+
+    console.log('Executing JFrog CLI Command:\n' + maskSecrets(cliCommand));
+
+    return new Promise((resolve, reject) => {
+        // Parse command and arguments
+        const args = cliCommand.split(' ').filter(arg => arg.length > 0);
+        const command = args[0];
+        const commandArgs = args.slice(1);
+
+        const spawnOptions = {
+            cwd: runningDir,
+            stdio: options.stdinSecret ? ['pipe', 'inherit', 'inherit'] : ['inherit', 'inherit', 'inherit']
+        };
+
+        const childProcess = spawn(command, commandArgs, spawnOptions);
+
+        if (options.stdinSecret) {
+            childProcess.stdin.write(options.stdinSecret);
+            childProcess.stdin.end();
+        }
+
+        childProcess.on('close', (code) => {
+            if (code === 0) {
+                resolve();
+            } else {
+                reject(new Error(`Command failed with exit code ${code}`));
+            }
+        });
+
+        childProcess.on('error', (error) => {
+            reject(new Error(`Failed to start command: ${error.message}`));
+        });
+    });
+}
+
+/**
  * Mask password and access token in a CLI command or exception.
  * @param str - CLI command or exception
  * @returns {string}
@@ -273,7 +336,7 @@ function maskSecrets(str) {
         .replace(/--access-token='.*?'/g, '--access-token=***');
 }
 
-function configureJfrogCliServer(jfrogService, serverId, cliPath, buildDir) {
+async function configureJfrogCliServer(jfrogService, serverId, cliPath, buildDir) {
     return configureSpecificCliServer(jfrogService, '--url', serverId, cliPath, buildDir);
 }
 
@@ -309,7 +372,7 @@ function debugLogIDToken(oidcToken) {
     console.debug('OIDC Token Audience: ', oidcClaims.aud);
 }
 
-function fetchAzureOidcToken(serviceConnectionID) {
+async function fetchAzureOidcToken(serviceConnectionID) {
     const uri = tl.getVariable('System.CollectionUri');
     const teamPrjID = tl.getVariable('System.TeamProjectId');
     const hub = tl.getVariable('System.HostType');
@@ -323,27 +386,61 @@ function fetchAzureOidcToken(serviceConnectionID) {
     }
 
     const url = `${uri}${teamPrjID}/_apis/distributedtask/hubs/${hub}/plans/${planID}/jobs/${jobID}/oidctoken?api-version=${apiVersion}&serviceConnectionId=${serviceConnectionID}`;
-
-    const res = syncRequest('POST', url, {
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-        },
-    });
-
-    if (res.statusCode !== 200) {
-        throw new Error(`OIDC token request failed: HTTP ${res.statusCode}\nBody: ${res.getBody('utf8')}`);
+    
+    console.log(`[fetchAzureOidcToken] Requesting OIDC token via ${url}`);
+    
+    // Setup proxy support
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy ||
+                    process.env.HTTP_PROXY || process.env.http_proxy;
+    
+    if (proxyUrl) {
+        console.log(`[fetchAzureOidcToken] Using proxy: ${proxyUrl}`);
     }
-    /** @type {{ oidcToken?: string }} */
-    const body = JSON.parse(res.getBody('utf8'));
-    if (!body.oidcToken) {
-        throw new Error('OIDC token not found in response body.');
+    
+    const isHttps = url.startsWith('https:');
+    const agent = proxyUrl
+        ? (isHttps ? new HttpsProxyAgent(proxyUrl) : new HttpProxyAgent(proxyUrl))
+        : undefined;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            agent,
+            signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`OIDC token request failed: HTTP ${response.status}\nBody: ${errorBody}`);
+        }
+
+        /** @type {{ oidcToken?: string }} */
+        const body = await response.json();
+        if (!body.oidcToken) {
+            throw new Error('OIDC token not found in response body.');
+        }
+        
+        debugLogIDToken(body.oidcToken);
+        return body.oidcToken;
+    } catch (error) {
+        clearTimeout(timeout);
+        if (error.name === 'AbortError') {
+            throw new Error('OIDC token request timed out after 15 seconds');
+        }
+        throw error;
     }
-    debugLogIDToken(body.oidcToken);
-    return body.oidcToken;
 }
 
-function exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir) {
+async function exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir) {
     // First validate supported CLI version
     let cliVersion = getCliVersion(cliPath);
     if (semver.lt(cliVersion, '2.75.0')) {
@@ -356,7 +453,7 @@ function exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderN
     }
     let oidcAudience = tl.getEndpointAuthorizationParameter(service, 'oidcAudience', true) || 'api://AzureADTokenExchange';
     const repoName = tl.getVariable('Build.Repository.Name');
-    const idToken = fetchAzureOidcToken(service);
+    const idToken = await fetchAzureOidcToken(service);
 
     // Build the CLI command
     let cliCommand = cliJoin(
@@ -421,7 +518,7 @@ function extractAccessTokenAndUsername(output) {
     throw new Error('Failed to extract AccessToken or Username from the output.');
 }
 
-function configureSpecificCliServer(service, urlFlag, serverId, cliPath, buildDir) {
+async function configureSpecificCliServer(service, urlFlag, serverId, cliPath, buildDir) {
     let serviceUrl = tl.getEndpointUrl(service, false);
     let serviceUser = tl.getEndpointAuthorizationParameter(service, 'username', true);
     let servicePassword = tl.getEndpointAuthorizationParameter(service, 'password', true);
@@ -436,7 +533,7 @@ function configureSpecificCliServer(service, urlFlag, serverId, cliPath, buildDi
     // This is done by the exchange command and not the config to export
     // username and access token params for further use by the users.
     if (oidcProviderName) {
-        serviceAccessToken = exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir);
+        serviceAccessToken = await exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir);
     }
 
     if (serviceAccessToken) {
@@ -463,12 +560,12 @@ function configureSpecificCliServer(service, urlFlag, serverId, cliPath, buildDi
  * @param workDir - Working directory.
  * @returns {boolean} - Whether the server was configured or not.
  */
-function configureDefaultJfrogServer(serverId, cliPath, workDir) {
+async function configureDefaultJfrogServer(serverId, cliPath, workDir) {
     let jfrogPlatformService = tl.getInput('jfrogPlatformConnection', false);
     if (!jfrogPlatformService) {
         return false;
     }
-    configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
+    await configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
     useCliServer(serverId, cliPath, workDir);
     return true;
 }
@@ -1075,12 +1172,12 @@ function addServerIdOption(cliCommand, serverId) {
  * @param workDir - Working Directory
  * @param serverIdsArray - Array of server IDs to be removed.
  */
-function taskDefaultCleanup(cliPath, workDir, serverIdsArray) {
+async function taskDefaultCleanup(cliPath, workDir, serverIdsArray) {
     // Delete servers if exist.
     deleteCliServers(cliPath, workDir, serverIdsArray);
     try {
         const configPath = join(workDir, '.jfrog', 'projects');
-        if (fs.existsSync(configPath)) {
+        if (await existsAsync(configPath)) {
             tl.debug('Removing JFrog CLI build tool configuration...');
             tl.rmRF(configPath);
         }
