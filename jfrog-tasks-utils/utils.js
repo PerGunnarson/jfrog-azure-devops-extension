@@ -136,6 +136,7 @@ module.exports = {
     isServerIdEnvSupported: isServerIdEnvSupported,
     setJdkHomeForJavaTasks: setJdkHomeForJavaTasks,
     existsAsync: existsAsync,
+    fetchAzureOidcToken: fetchAzureOidcToken,
 };
 
 /**
@@ -364,12 +365,21 @@ function debugLogIDToken(oidcToken) {
      * @property {string} aud - The audience of the token.
      */
 
-    /** @type {OidcClaims} */
-    const oidcClaims = JSON.parse(Buffer.from(oidcToken.split('.')[1], 'base64').toString());
-    console.debug('OIDC Token Subject: ', oidcClaims.sub);
-    console.debug(`OIDC Token Claims: {"sub": "${oidcClaims.sub}"}`);
-    console.debug('OIDC Token Issuer (Provider URL): ', oidcClaims.iss);
-    console.debug('OIDC Token Audience: ', oidcClaims.aud);
+    if (!oidcToken) {
+        console.debug('OIDC Token is empty or undefined');
+        return;
+    }
+    
+    try {
+        /** @type {OidcClaims} */
+        const oidcClaims = JSON.parse(Buffer.from(oidcToken.split('.')[1], 'base64').toString());
+        console.debug('OIDC Token Subject: ', oidcClaims.sub);
+        console.debug(`OIDC Token Claims: {"sub": "${oidcClaims.sub}"}`);
+        console.debug('OIDC Token Issuer (Provider URL): ', oidcClaims.iss);
+        console.debug('OIDC Token Audience: ', oidcClaims.aud);
+    } catch (err) {
+        console.debug('Failed to parse OIDC Token:', err.message);
+    }
 }
 
 async function fetchAzureOidcToken(serviceConnectionID) {
