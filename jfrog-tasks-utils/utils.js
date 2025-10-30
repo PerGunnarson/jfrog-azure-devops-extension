@@ -146,7 +146,7 @@ module.exports = {
  * @param cliDownloadUrl - [Optional, Default - releases.jfrog.io] - URL to download the required CLI executable from.
  * @param cliAuthHandlers - [Optional, Default - Anonymous] - Authentication handlers to download CLI with.
  */
-function executeCliTask(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHandlers) {
+async function executeCliTask(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHandlers) {
     process.env.JFROG_CLI_HOME = jfrogFolderPath;
     process.env.JFROG_CLI_OFFER_CONFIG = 'false';
     process.env.JFROG_CLI_USER_AGENT = buildAgent + '/' + pluginVersion;
@@ -163,10 +163,10 @@ function executeCliTask(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHandlers
     }
 
     runTaskCbk = runTaskFunc;
-    getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion)
-        .then((cliPath) => {
+    await getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion)
+        .then(async (cliPath) => {
             runCbk(cliPath);
-            collectEnvVarsIfNeeded(cliPath);
+            await collectEnvVarsIfNeeded(cliPath);
         })
         .catch((error) => tl.setResult(tl.TaskResult.Failed, 'Error occurred while executing task: ' + error));
 }
@@ -313,19 +313,19 @@ function maskSecrets(str) {
 }
 
 async function configureJfrogCliServer(jfrogService, serverId, cliPath, buildDir) {
-    return configureSpecificCliServer(jfrogService, '--url', serverId, cliPath, buildDir);
+    return await configureSpecificCliServer(jfrogService, '--url', serverId, cliPath, buildDir);
 }
 
-function configureArtifactoryCliServer(artifactoryService, serverId, cliPath, buildDir) {
-    return configureSpecificCliServer(artifactoryService, '--artifactory-url', serverId, cliPath, buildDir);
+async function configureArtifactoryCliServer(artifactoryService, serverId, cliPath, buildDir) {
+    return await configureSpecificCliServer(artifactoryService, '--artifactory-url', serverId, cliPath, buildDir);
 }
 
-function configureDistributionCliServer(distributionService, serverId, cliPath, buildDir) {
-    return configureSpecificCliServer(distributionService, '--distribution-url', serverId, cliPath, buildDir);
+async function configureDistributionCliServer(distributionService, serverId, cliPath, buildDir) {
+    return await configureSpecificCliServer(distributionService, '--distribution-url', serverId, cliPath, buildDir);
 }
 
-function configureXrayCliServer(xrayService, serverId, cliPath, buildDir) {
-    return configureSpecificCliServer(xrayService, '--xray-url', serverId, cliPath, buildDir);
+async function configureXrayCliServer(xrayService, serverId, cliPath, buildDir) {
+    return await configureSpecificCliServer(xrayService, '--xray-url', serverId, cliPath, buildDir);
 }
 
 /**
@@ -550,7 +550,7 @@ async function configureDefaultJfrogServer(serverId, cliPath, workDir) {
     if (!jfrogPlatformService) {
         return false;
     }
-    configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
+    await configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
     await useCliServer(serverId, cliPath, workDir);
     return true;
 }
@@ -564,7 +564,7 @@ async function configureDefaultJfrogServer(serverId, cliPath, workDir) {
 async function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
     let artifactoryService = tl.getInput('artifactoryConnection', true);
     const serverId = assembleUniqueServerId(usageType);
-    configureArtifactoryCliServer(artifactoryService, serverId, cliPath, workDir);
+    await configureArtifactoryCliServer(artifactoryService, serverId, cliPath, workDir);
     await useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
@@ -578,7 +578,7 @@ async function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
 async function configureDefaultDistributionServer(usageType, cliPath, workDir) {
     let distributionService = tl.getInput('distributionConnection', true);
     const serverId = assembleUniqueServerId(usageType);
-    configureDistributionCliServer(distributionService, serverId, cliPath, workDir);
+    await configureDistributionCliServer(distributionService, serverId, cliPath, workDir);
     await useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
@@ -592,7 +592,7 @@ async function configureDefaultDistributionServer(usageType, cliPath, workDir) {
 async function configureDefaultXrayServer(usageType, cliPath, workDir) {
     let xrayService = tl.getInput('xrayConnection', true);
     const serverId = assembleUniqueServerId(usageType);
-    configureXrayCliServer(xrayService, serverId, cliPath, workDir);
+    await configureXrayCliServer(xrayService, serverId, cliPath, workDir);
     await useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
@@ -994,11 +994,11 @@ function encodePath(str) {
  * Runs collect environment variables JFrog CLI command if includeEnvVars is configured to true.
  * @param cliPath - (String) - The cli path.
  */
-function collectEnvVarsIfNeeded(cliPath) {
+async function collectEnvVarsIfNeeded(cliPath) {
     let includeEnvVars = tl.getBoolInput('includeEnvVars');
     if (includeEnvVars) {
         try {
-            collectEnvVars(cliPath);
+            await collectEnvVars(cliPath);
         } catch (ex) {
             tl.setResult(tl.TaskResult.Failed, ex);
         }
@@ -1073,7 +1073,7 @@ async function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCo
     if (repoResolver) {
         // Configure Artifactory resolver server.
         const usageType = cmd + tl.getInput('command', true) + '_resolver';
-        serverIdResolve = configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
+        serverIdResolve = await configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
 
         // Add serverId and repo to config command.
         cliCommand = cliJoin(cliCommand, '--server-id-resolve=' + quote(serverIdResolve));
@@ -1082,7 +1082,7 @@ async function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCo
     if (repoDeploy) {
         // Configure Artifactory deployer server.
         const usageType = cmd + tl.getInput('command', true) + '_deployer';
-        serverIdDeploy = configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
+        serverIdDeploy = await configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
 
         // Add serverId and repo to config command.
         cliCommand = cliJoin(cliCommand, '--server-id-deploy=' + quote(serverIdDeploy));
