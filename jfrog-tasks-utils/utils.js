@@ -785,24 +785,24 @@ function runCbk(cliPath) {
     runTaskCbk(cliPath);
 }
 
-function createCliDirs() {
-    if (!fs.existsSync(jfrogFolderPath)) {
+async function createCliDirsAsync() {
+    if (!(await existsAsync(jfrogFolderPath))) {
         try {
             console.log('Creating JFrog CLI directory: ' + jfrogFolderPath);
-            fs.mkdirSync(jfrogFolderPath, { recursive: true });
+            await fs.mkdir(jfrogFolderPath, { recursive: true });
         } catch (error) {
             const originalToolsDir = tl.getVariable('Agent.ToolsDirectory') || 'undefined';
             console.error(
                 `Failed to create JFrog CLI directory. Original Agent.ToolsDirectory: ${originalToolsDir}, Attempted path: ${jfrogFolderPath}, Error: ${error.message}`,
             );
 
-            // Try alternative approach: create directory without encoding
+            // Try with fallback
             const fallbackPath = join(tl.getVariable('Agent.ToolsDirectory') || '', '_jf').replace(/"/g, '');
             console.log('Attempting fallback path: ' + fallbackPath);
+
             try {
-                fs.mkdirSync(fallbackPath, { recursive: true });
+                await fs.mkdir(fallbackPath, { recursive: true });
                 console.log('Successfully created directory using fallback path');
-                // Update the global variable to use the working path
                 jfrogFolderPath = fallbackPath;
             } catch (fallbackError) {
                 throw new Error(
