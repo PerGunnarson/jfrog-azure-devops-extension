@@ -253,40 +253,6 @@ function generateDownloadCliErrorMessage(downloadUrl, cliVersion) {
     return errMsg;
 }
 
-/**
- * Execute provided CLI command in a child process. In order to receive execution's stdout, pass stdio=null.
- * @param {string} cliCommand
- * @param {string} runningDir
- * @param {object} options - secret to be provided vi stdin.
- * @param {{
- *   stdinSecret?: string;
- *   withOutput?: boolean
- *   }} [options]
- * @returns {Buffer|string} - execSync output.
- * @throws In CLI execution failure.
- */
-function executeCliCommand(cliCommand, runningDir, options = {}) {
-    if (!fs.existsSync(runningDir)) {
-        throw "JFrog CLI execution path doesn't exist: " + runningDir;
-    }
-    if (!cliCommand) {
-        throw 'Cannot execute empty Cli command.';
-    }
-    try {
-        const stdin = options.stdinSecret ? 'pipe' : 0;
-        const stdout = options.withOutput ? 'pipe' : 1;
-        const stderr = 2;
-        console.log('Executing JFrog CLI Command:\n' + maskSecrets(cliCommand));
-        return execSync(cliCommand, { cwd: runningDir, stdio: [stdin, stdout, stderr], input: options.stdinSecret });
-    } catch (ex) {
-        // Error occurred - mask secrets in message.
-        if (ex.message) {
-            ex.message = maskSecrets(ex.message);
-        }
-        // Throwing the same error to allow relying on its original exit code and stack trace.
-        throw ex;
-    }
-}
 
 /**
  * Asynchronous version of executeCliCommand using spawn instead of execSync
@@ -481,7 +447,7 @@ async function exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcPro
     );
 
     // Execute the CLI command and capture the output
-    let exeRes = executeCliCommand(cliCommand, buildDir, { withOutput: true }).toString();
+    let exeRes = (await executeCliCommandAsync(cliCommand, buildDir, { withOutput: true })).toString();
 
     // Extract AccessToken
     const { username, accessToken } = extractAccessTokenAndUsername(exeRes);
@@ -569,7 +535,7 @@ async function configureSpecificCliServer(service, urlFlag, serverId, cliPath, b
         );
         stdinSecret = secretInStdinSupported ? servicePassword : undefined;
     }
-    return executeCliCommand(cliCommand, buildDir, { stdinSecret });
+    return await executeCliCommandAsync(cliCommand, buildDir, { stdinSecret });
 }
 
 /**
@@ -584,8 +550,8 @@ async function configureDefaultJfrogServer(serverId, cliPath, workDir) {
     if (!jfrogPlatformService) {
         return false;
     }
-    await configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
-    useCliServer(serverId, cliPath, workDir);
+    configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
+    await useCliServer(serverId, cliPath, workDir);
     return true;
 }
 
@@ -595,11 +561,11 @@ async function configureDefaultJfrogServer(serverId, cliPath, workDir) {
  * @param cliPath - Path to JFrog CLI executable.
  * @param workDir - Working directory.
  */
-function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
+async function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
     let artifactoryService = tl.getInput('artifactoryConnection', true);
     const serverId = assembleUniqueServerId(usageType);
     configureArtifactoryCliServer(artifactoryService, serverId, cliPath, workDir);
-    useCliServer(serverId, cliPath, workDir);
+    await useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
 
@@ -609,11 +575,11 @@ function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
  * @param cliPath - Path to JFrog CLI executable.
  * @param workDir - Working directory.
  */
-function configureDefaultDistributionServer(usageType, cliPath, workDir) {
+async function configureDefaultDistributionServer(usageType, cliPath, workDir) {
     let distributionService = tl.getInput('distributionConnection', true);
     const serverId = assembleUniqueServerId(usageType);
     configureDistributionCliServer(distributionService, serverId, cliPath, workDir);
-    useCliServer(serverId, cliPath, workDir);
+    await useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
 
@@ -623,11 +589,11 @@ function configureDefaultDistributionServer(usageType, cliPath, workDir) {
  * @param cliPath - Path to JFrog CLI executable.
  * @param workDir - Working directory.
  */
-function configureDefaultXrayServer(usageType, cliPath, workDir) {
+async function configureDefaultXrayServer(usageType, cliPath, workDir) {
     let xrayService = tl.getInput('xrayConnection', true);
     const serverId = assembleUniqueServerId(usageType);
     configureXrayCliServer(xrayService, serverId, cliPath, workDir);
-    useCliServer(serverId, cliPath, workDir);
+    await useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
 
@@ -636,9 +602,9 @@ function configureDefaultXrayServer(usageType, cliPath, workDir) {
  * @returns {Buffer|string}
  * @throws In CLI execution failure.
  */
-function useCliServer(serverId, cliPath, buildDir) {
+async function useCliServer(serverId, cliPath, buildDir) {
     const cliCommand = cliJoin(cliPath, jfrogCliConfigUseCommand, quote(serverId));
-    return executeCliCommand(cliCommand, buildDir);
+    return await executeCliCommandAsync(cliCommand, buildDir);
 }
 
 /**
@@ -647,7 +613,7 @@ function useCliServer(serverId, cliPath, buildDir) {
  * @param buildDir - Build / Working directory
  * @param serverIdArray - Array of server IDs to remove
  */
-function deleteCliServers(cliPath, buildDir, serverIdArray) {
+async function deleteCliServers(cliPath, buildDir, serverIdArray) {
     if (!serverIdArray) {
         return;
     }
@@ -656,7 +622,7 @@ function deleteCliServers(cliPath, buildDir, serverIdArray) {
             if (serverIdArray[i]) {
                 const deleteServerIDCommand = cliJoin(cliPath, jfrogCliConfigRmCommand, quote(serverIdArray[i]), '--quiet');
                 // This operation throws an exception in case of failure.
-                executeCliCommand(deleteServerIDCommand, buildDir);
+                await executeCliCommandAsync(deleteServerIDCommand, buildDir);
             }
         } catch (deleteServersException) {
             tl.setResult(tl.TaskResult.Failed, `Could not delete server id ${serverIdArray[i]} error: ${deleteServersException}`);
@@ -1045,14 +1011,14 @@ function collectEnvVarsIfNeeded(cliPath) {
  * @returns (void) - String with error message or void if passes successfully.
  * @throws In CLI execution failure.
  */
-function collectEnvVars(cliPath) {
+async function collectEnvVars(cliPath) {
     console.log('Collecting environment variables...');
     let buildName = tl.getInput('buildName', true);
     let buildNumber = tl.getInput('buildNumber', true);
     let workDir = tl.getVariable('System.DefaultWorkingDirectory');
     let cliEnvVarsCommand = cliJoin(cliPath, 'rt bce', quote(buildName), quote(buildNumber));
     cliEnvVarsCommand = addProjectOption(cliEnvVarsCommand);
-    executeCliCommand(cliEnvVarsCommand, workDir);
+    await executeCliCommandAsync(cliEnvVarsCommand, workDir);
 }
 
 function isWindows() {
@@ -1100,7 +1066,7 @@ function assembleUniqueServerId(usageType) {
  * @param repoDeploy - Repository to use for deploying. Pass a falsy value to skip.
  * @returns {string[]}
  */
-function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCommand, repoResolver, repoDeploy) {
+async function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCommand, repoResolver, repoDeploy) {
     let cliCommand = cliJoin(cliPath, configCommand);
     let serverIdResolve;
     let serverIdDeploy;
@@ -1124,7 +1090,7 @@ function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCommand,
     }
     // Execute cli.
     try {
-        executeCliCommand(cliCommand, requiredWorkDir);
+        await executeCliCommandAsync(cliCommand, requiredWorkDir);
         return [serverIdResolve, serverIdDeploy];
     } catch (ex) {
         tl.setResult(tl.TaskResult.Failed, ex);
@@ -1157,7 +1123,7 @@ function getCurrentTimestamp() {
  * Removes the cli server config and env variables set in ToolsInstaller task.
  * @throws In CLI execution failure.
  */
-function removeExtractorsDownloadVariables(cliPath, workDir) {
+async function removeExtractorsDownloadVariables(cliPath, workDir) {
     let extractorsEnv = tl.getVariable(extractorsRemoteEnv);
     if (!extractorsEnv) {
         return;
@@ -1169,7 +1135,7 @@ function removeExtractorsDownloadVariables(cliPath, workDir) {
     }
     const serverId = extractorsEnv.substring(0, ind);
     tl.setVariable(extractorsRemoteEnv, '');
-    deleteCliServers(cliPath, workDir, [serverId]);
+    await deleteCliServers(cliPath, workDir, [serverId]);
 }
 
 /**
@@ -1193,7 +1159,7 @@ function addServerIdOption(cliCommand, serverId) {
  */
 async function taskDefaultCleanup(cliPath, workDir, serverIdsArray) {
     // Delete servers if exist.
-    deleteCliServers(cliPath, workDir, serverIdsArray);
+    await deleteCliServers(cliPath, workDir, serverIdsArray);
     try {
         const configPath = join(workDir, '.jfrog', 'projects');
         if (await existsAsync(configPath)) {
