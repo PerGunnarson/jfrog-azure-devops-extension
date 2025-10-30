@@ -171,24 +171,33 @@ function executeCliTask(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHandlers
         .catch((error) => tl.setResult(tl.TaskResult.Failed, 'Error occurred while executing task: ' + error));
 }
 
-function getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion) {
-    return new Promise(function (resolve, reject) {
-        let cliDir = toolLib.findLocalTool(jfrogCliToolName, cliVersion);
-        if (fs.existsSync(getCustomCliPath())) {
-            tl.debug('Using JFrog CLI from the custom CLI path: ' + getCustomCliPath());
-            resolve(getCustomCliPath());
-        } else if (cliDir) {
-            let cliPath = join(cliDir, fileName);
-            tl.debug('Using existing versioned cli path: ' + cliPath);
-            resolve(cliPath);
-        } else {
-            const errMsg = generateDownloadCliErrorMessage(cliDownloadUrl, cliVersion);
-            createCliDirs();
-            return downloadCli(cliDownloadUrl, cliAuthHandlers, cliVersion)
-                .then((cliPath) => resolve(cliPath))
-                .catch((error) => reject(errMsg + '\n' + error));
-        }
-    });
+async function getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion) {
+    const cliDir = toolLib.findLocalTool(jfrogCliToolName, cliVersion);
+    const customCliPath = getCustomCliPath();
+
+    // Kontrollera om anpassad CLI finns
+    if (await existsAsync(customCliPath)) {
+        tl.debug(`Using JFrog CLI from the custom CLI path: ${customCliPath}`);
+        return customCliPath;
+    }
+
+    // Kontrollera om CLI redan är installerad lokalt via toolLib
+    if (cliDir) {
+        const cliPath = join(cliDir, fileName);
+        tl.debug(`Using existing versioned cli path: ${cliPath}`);
+        return cliPath;
+    }
+
+    // Ladda ner CLI om den inte finns lokalt
+    const errMsg = generateDownloadCliErrorMessage(cliDownloadUrl, cliVersion);
+    await createCliDirsAsync();
+
+    try {
+        const cliPath = await downloadCli(cliDownloadUrl, cliAuthHandlers, cliVersion);
+        return cliPath;
+    } catch (error) {
+        throw new Error(`${errMsg}\n${error}`);
+    }
 }
 
 function buildCliArtifactoryDownloadUrl(rtUrl, repoName, cliVersion = defaultJfrogCliVersion) {
