@@ -86,8 +86,10 @@ let runTaskCbk = null;
 
 module.exports = {
     executeCliTask: executeCliTask,
+
     executeCliCommand: executeCliCommand,
     executeCliCommandAsync: executeCliCommandAsync,
+
     downloadCli: downloadCli,
     cliJoin: cliJoin,
     quote: quote,
@@ -103,11 +105,17 @@ module.exports = {
     isToolExists: isToolExists,
     buildCliArtifactoryDownloadUrl: buildCliArtifactoryDownloadUrl,
     createAuthHandlers: createAuthHandlers,
+
     taskDefaultCleanup: taskDefaultCleanup,
+    taskDefaultCleanupAsync: taskDefaultCleanupAsync,
+    
     writeSpecContentToSpecPath: writeSpecContentToSpecPath,
     stripTrailingSlash: stripTrailingSlash,
     determineCliWorkDir: determineCliWorkDir,
+
     createBuildToolConfigFile: createBuildToolConfigFile,
+    createBuildToolConfigFileAsync: createBuildToolConfigFileAsync,
+    
     assembleUniqueServerId: assembleUniqueServerId,
     appendBuildFlagsToCliCommand: appendBuildFlagsToCliCommand,
     getJfrogFolderPath: getJfrogFolderPath,
@@ -115,18 +123,36 @@ module.exports = {
     getCustomCliPath: getCustomCliPath,
     compareVersions: compareVersions,
     addTrailingSlashIfNeeded: addTrailingSlashIfNeeded,
+    
     useCliServer: useCliServer,
+    useCliServerAsync: useCliServerAsync,
+    
     getCurrentTimestamp: getCurrentTimestamp,
+
     removeExtractorsDownloadVariables: removeExtractorsDownloadVariables,
+    removeExtractorsDownloadVariablesAsync: removeExtractorsDownloadVariablesAsync,
+
     handleSpecFile: handleSpecFile,
     addProjectOption: addProjectOption,
     addServerIdOption: addServerIdOption,
+
     configureArtifactoryCliServer: configureArtifactoryCliServer,
+    configureArtifactoryCliServerAsync: configureArtifactoryCliServerAsync,
+
     configureJfrogCliServer: configureJfrogCliServer,
+    configureJfrogCliServerAsync: configureJfrogCliServerAsync,
+
     configureDefaultJfrogServer: configureDefaultJfrogServer,
+    configureDefaultJfrogServerAsync: configureDefaultJfrogServerAsync,
+
     configureDefaultArtifactoryServer: configureDefaultArtifactoryServer,
-    configureDefaultDistributionServer: configureDefaultDistributionServer,
+    configureDefaultArtifactoryServerAsync: configureDefaultArtifactoryServerAsync,
+    
+    configureDefaultDistributionServerAsync: configureDefaultDistributionServerAsync,
+
     configureDefaultXrayServer: configureDefaultXrayServer,
+    configureDefaultXrayServerAsync: configureDefaultXrayServerAsync,
+    
     minCustomCliVersion: minCustomCliVersion,
     defaultJfrogCliVersion: defaultJfrogCliVersion,
     pipelineRequestedCliVersionEnv: pipelineRequestedCliVersionEnv,
@@ -134,9 +160,7 @@ module.exports = {
     extractorsRemoteEnv: extractorsRemoteEnv,
     jfrogCliToolName: jfrogCliToolName,
     isServerIdEnvSupported: isServerIdEnvSupported,
-    setJdkHomeForJavaTasks: setJdkHomeForJavaTasks,
-    existsAsync: existsAsync,
-    fetchAzureOidcToken: fetchAzureOidcToken,
+    setJdkHomeForJavaTasks: setJdkHomeForJavaTasks    
 };
 
 /**
@@ -166,12 +190,32 @@ async function executeCliTask(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHa
     await getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion)
         .then(async (cliPath) => {
             runCbk(cliPath);
-            await collectEnvVarsIfNeeded(cliPath);
+            await collectEnvVarsIfNeededAsync(cliPath);
         })
         .catch((error) => tl.setResult(tl.TaskResult.Failed, 'Error occurred while executing task: ' + error));
 }
 
-async function getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion) {
+function getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion) {
+    return new Promise(function (resolve, reject) {
+        let cliDir = toolLib.findLocalTool(jfrogCliToolName, cliVersion);
+        if (fs.existsSync(getCustomCliPath())) {
+            tl.debug('Using JFrog CLI from the custom CLI path: ' + getCustomCliPath());
+            resolve(getCustomCliPath());
+        } else if (cliDir) {
+            let cliPath = join(cliDir, fileName);
+            tl.debug('Using existing versioned cli path: ' + cliPath);
+            resolve(cliPath);
+        } else {
+            const errMsg = generateDownloadCliErrorMessage(cliDownloadUrl, cliVersion);
+            createCliDirs();
+            return downloadCli(cliDownloadUrl, cliAuthHandlers, cliVersion)
+                .then((cliPath) => resolve(cliPath))
+                .catch((error) => reject(errMsg + '\n' + error));
+        }
+    });
+}
+
+async function getCliPathAsync(cliDownloadUrl, cliAuthHandlers, cliVersion) {
     const cliDir = toolLib.findLocalTool(jfrogCliToolName, cliVersion);
     const customCliPath = getCustomCliPath();
 
@@ -253,9 +297,53 @@ function generateDownloadCliErrorMessage(downloadUrl, cliVersion) {
     return errMsg;
 }
 
+/**
+ * Execute provided CLI command in a child process. In order to receive execution's stdout, pass stdio=null.
+ * @param {string} cliCommand
+ * @param {string} runningDir
+ * @param {object} options - secret to be provided vi stdin.
+ * @param {{
+ *   stdinSecret?: string;
+ *   withOutput?: boolean
+ *   }} [options]
+ * @returns {Buffer|string} - execSync output.
+ * @throws In CLI execution failure.
+ */
+function executeCliCommand(cliCommand, runningDir, options = {}) {
+    if (!fs.existsSync(runningDir)) {
+        throw "JFrog CLI execution path doesn't exist: " + runningDir;
+    }
+    if (!cliCommand) {
+        throw 'Cannot execute empty Cli command.';
+    }
+    try {
+        const stdin = options.stdinSecret ? 'pipe' : 0;
+        const stdout = options.withOutput ? 'pipe' : 1;
+        const stderr = 2;
+        console.log('Executing JFrog CLI Command:\n' + maskSecrets(cliCommand));
+        return execSync(cliCommand, { cwd: runningDir, stdio: [stdin, stdout, stderr], input: options.stdinSecret });
+    } catch (ex) {
+        // Error occurred - mask secrets in message.
+        if (ex.message) {
+            ex.message = maskSecrets(ex.message);
+        }
+        // Throwing the same error to allow relying on its original exit code and stack trace.
+        throw ex;
+    }
+}
+
 
 /**
- * Asynchronous version of executeCliCommand using spawn instead of execSync
+ * Async - Execute provided CLI command in a child process. In order to receive execution's stdout, pass stdio=null.
+ * @param {string} cliCommand
+ * @param {string} runningDir
+ * @param {object} options - secret to be provided vi stdin.
+ * @param {{
+ *   stdinSecret?: string;
+ *   withOutput?: boolean
+ *   }} [options]
+ * @returns {Buffer|string} - execSync output.
+ * @throws In CLI execution failure.
  */
 async function executeCliCommandAsync(cliCommand, runningDir, options = {}) {
     if (!(await existsAsync(runningDir))) {
@@ -312,20 +400,37 @@ function maskSecrets(str) {
         .replace(/--access-token='.*?'/g, '--access-token=***');
 }
 
-async function configureJfrogCliServer(jfrogService, serverId, cliPath, buildDir) {
-    return await configureSpecificCliServer(jfrogService, '--url', serverId, cliPath, buildDir);
+
+function configureJfrogCliServer(jfrogService, serverId, cliPath, buildDir) {
+    return configureSpecificCliServer(jfrogService, '--url', serverId, cliPath, buildDir);
 }
 
-async function configureArtifactoryCliServer(artifactoryService, serverId, cliPath, buildDir) {
-    return await configureSpecificCliServer(artifactoryService, '--artifactory-url', serverId, cliPath, buildDir);
+async function configureJfrogCliServerAsync(jfrogService, serverId, cliPath, buildDir) {
+    return await configureSpecificCliServerAsync(jfrogService, '--url', serverId, cliPath, buildDir);
 }
 
-async function configureDistributionCliServer(distributionService, serverId, cliPath, buildDir) {
-    return await configureSpecificCliServer(distributionService, '--distribution-url', serverId, cliPath, buildDir);
+function configureArtifactoryCliServer(artifactoryService, serverId, cliPath, buildDir) {
+    return configureSpecificCliServer(artifactoryService, '--artifactory-url', serverId, cliPath, buildDir);
 }
 
-async function configureXrayCliServer(xrayService, serverId, cliPath, buildDir) {
-    return await configureSpecificCliServer(xrayService, '--xray-url', serverId, cliPath, buildDir);
+async function configureArtifactoryCliServerAsync(artifactoryService, serverId, cliPath, buildDir) {
+    return await configureSpecificCliServerAsync(artifactoryService, '--artifactory-url', serverId, cliPath, buildDir);
+}
+
+function configureXrayCliServer(xrayService, serverId, cliPath, buildDir) {
+    return configureSpecificCliServer(xrayService, '--xray-url', serverId, cliPath, buildDir);
+}
+
+async function configureXrayCliServerAsync(xrayService, serverId, cliPath, buildDir) {
+    return await configureSpecificCliServerAsync(xrayService, '--xray-url', serverId, cliPath, buildDir);
+}
+
+function configureDistributionCliServer(distributionService, serverId, cliPath, buildDir) {
+    return configureSpecificCliServer(distributionService, '--distribution-url', serverId, cliPath, buildDir);
+}
+
+async function configureDistributionCliServerAsync(distributionService, serverId, cliPath, buildDir) {
+    return await configureSpecificCliServerAsync(distributionService, '--distribution-url', serverId, cliPath, buildDir);
 }
 
 /**
@@ -357,7 +462,41 @@ function debugLogIDToken(oidcToken) {
     }
 }
 
-async function fetchAzureOidcToken(serviceConnectionID) {
+function fetchAzureOidcToken(serviceConnectionID) {
+    const uri = tl.getVariable('System.CollectionUri');
+    const teamPrjID = tl.getVariable('System.TeamProjectId');
+    const hub = tl.getVariable('System.HostType');
+    const planID = tl.getVariable('System.PlanId');
+    const jobID = tl.getVariable('System.JobId');
+    const apiVersion = '7.1-preview.1';
+
+    const token = tl.getVariable('System.AccessToken');
+    if (!token) {
+        throw new Error('System.AccessToken is not available. Make sure "Allow scripts to access OAuth token" is enabled.');
+    }
+
+    const url = `${uri}${teamPrjID}/_apis/distributedtask/hubs/${hub}/plans/${planID}/jobs/${jobID}/oidctoken?api-version=${apiVersion}&serviceConnectionId=${serviceConnectionID}`;
+
+    const res = syncRequest('POST', url, {
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+    });
+
+    if (res.statusCode !== 200) {
+        throw new Error(`OIDC token request failed: HTTP ${res.statusCode}\nBody: ${res.getBody('utf8')}`);
+    }
+    /** @type {{ oidcToken?: string }} */
+    const body = JSON.parse(res.getBody('utf8'));
+    if (!body.oidcToken) {
+        throw new Error('OIDC token not found in response body.');
+    }
+    debugLogIDToken(body.oidcToken);
+    return body.oidcToken;
+}
+
+async function fetchAzureOidcTokenAsync(serviceConnectionID) {
     const uri = tl.getVariable('System.CollectionUri');
     const teamPrjID = tl.getVariable('System.TeamProjectId');
     const hub = tl.getVariable('System.HostType');
@@ -425,7 +564,7 @@ async function fetchAzureOidcToken(serviceConnectionID) {
     }
 }
 
-async function exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir) {
+function exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir) {
     // First validate supported CLI version
     let cliVersion = getCliVersion(cliPath);
     if (semver.lt(cliVersion, '2.75.0')) {
@@ -438,7 +577,41 @@ async function exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcPro
     }
     let oidcAudience = tl.getEndpointAuthorizationParameter(service, 'oidcAudience', true) || 'api://AzureADTokenExchange';
     const repoName = tl.getVariable('Build.Repository.Name');
-    const idToken = await fetchAzureOidcToken(service);
+    const idToken = fetchAzureOidcTokenAsync(service);
+
+    // Build the CLI command
+    let cliCommand = cliJoin(
+        cliPath,
+        `eot ${quote(oidcProviderName)} ${quote(idToken)} --url=${quote(serviceUrl)} --oidc-provider-type=Azure --oidc-audience=${quote(oidcAudience)} --repository=${quote(repoName)}`,
+    );
+
+    // Execute the CLI command and capture the output
+    let exeRes = executeCliCommand(cliCommand, buildDir, { withOutput: true }).toString();
+
+    // Extract AccessToken
+    const { username, accessToken } = extractAccessTokenAndUsername(exeRes);
+
+    // Set output variables
+    tl.setVariable(oidcUserOutputName, username, true);
+    tl.setVariable(oidcTokenOutputName, accessToken, true);
+
+    return accessToken;
+}
+
+async function exchangeOidcTokenAndSetStepVariablesAsync(service, serviceUrl, oidcProviderName, cliPath, buildDir) {
+    // First validate supported CLI version
+    let cliVersion = getCliVersion(cliPath);
+    if (semver.lt(cliVersion, '2.75.0')) {
+        throw new Error('CLI version too low');
+    }
+    if (cliVersion < minSupportedOidcCliVersion) {
+        throw new Error(
+            `The CLI version ${cliVersion} is not supported for OIDC token exchange. Minimum required version is ${minSupportedOidcCliVersion}.`,
+        );
+    }
+    let oidcAudience = tl.getEndpointAuthorizationParameter(service, 'oidcAudience', true) || 'api://AzureADTokenExchange';
+    const repoName = tl.getVariable('Build.Repository.Name');
+    const idToken = await fetchAzureOidcTokenAsync(service);
 
     // Build the CLI command
     let cliCommand = cliJoin(
@@ -503,7 +676,7 @@ function extractAccessTokenAndUsername(output) {
     throw new Error('Failed to extract AccessToken or Username from the output.');
 }
 
-async function configureSpecificCliServer(service, urlFlag, serverId, cliPath, buildDir) {
+function configureSpecificCliServer(service, urlFlag, serverId, cliPath, buildDir) {
     let serviceUrl = tl.getEndpointUrl(service, false);
     let serviceUser = tl.getEndpointAuthorizationParameter(service, 'username', true);
     let servicePassword = tl.getEndpointAuthorizationParameter(service, 'password', true);
@@ -518,7 +691,42 @@ async function configureSpecificCliServer(service, urlFlag, serverId, cliPath, b
     // This is done by the exchange command and not the config to export
     // username and access token params for further use by the users.
     if (oidcProviderName) {
-        serviceAccessToken = await exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir);
+        serviceAccessToken = exchangeOidcTokenAndSetStepVariables(service, serviceUrl, oidcProviderName, cliPath, buildDir);
+    }
+
+    if (serviceAccessToken) {
+        // Add access-token if required.
+        cliCommand = cliJoin(cliCommand, secretInStdinSupported ? '--access-token-stdin' : '--access-token=' + quote(serviceAccessToken));
+        stdinSecret = secretInStdinSupported ? serviceAccessToken : undefined;
+    } else {
+        // Add username and password.
+        cliCommand = cliJoin(
+            cliCommand,
+            '--user=' + (isWindows() ? quote(serviceUser) : singleQuote(serviceUser)),
+            '--basic-auth-only',
+            secretInStdinSupported ? '--password-stdin' : '--password=' + (isWindows() ? quote(servicePassword) : singleQuote(servicePassword)),
+        );
+        stdinSecret = secretInStdinSupported ? servicePassword : undefined;
+    }
+    return executeCliCommand(cliCommand, buildDir, { stdinSecret });
+}
+
+async function configureSpecificCliServerAsync(service, urlFlag, serverId, cliPath, buildDir) {
+    let serviceUrl = tl.getEndpointUrl(service, false);
+    let serviceUser = tl.getEndpointAuthorizationParameter(service, 'username', true);
+    let servicePassword = tl.getEndpointAuthorizationParameter(service, 'password', true);
+    let serviceAccessToken = tl.getEndpointAuthorizationParameter(service, 'apitoken', true);
+    let oidcProviderName = tl.getEndpointAuthorizationParameter(service, 'oidcProviderName', true);
+    let cliCommand = cliJoin(cliPath, jfrogCliConfigAddCommand, quote(serverId), urlFlag + '=' + quote(serviceUrl), '--interactive=false');
+    let stdinSecret;
+    let secretInStdinSupported = isStdinSecretSupported();
+
+    // In the case of OIDC, we exchange tokens via the CLI
+    // and populate the access token to the CLI config.
+    // This is done by the exchange command and not the config to export
+    // username and access token params for further use by the users.
+    if (oidcProviderName) {
+        serviceAccessToken = await exchangeOidcTokenAndSetStepVariablesAsync(service, serviceUrl, oidcProviderName, cliPath, buildDir);
     }
 
     if (serviceAccessToken) {
@@ -545,15 +753,16 @@ async function configureSpecificCliServer(service, urlFlag, serverId, cliPath, b
  * @param workDir - Working directory.
  * @returns {boolean} - Whether the server was configured or not.
  */
-async function configureDefaultJfrogServer(serverId, cliPath, workDir) {
+async function configureDefaultJfrogServerAsync(serverId, cliPath, workDir) {
     let jfrogPlatformService = tl.getInput('jfrogPlatformConnection', false);
     if (!jfrogPlatformService) {
         return false;
     }
-    await configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
-    await useCliServer(serverId, cliPath, workDir);
+    await configureJfrogCliServerAsync(jfrogPlatformService, serverId, cliPath, workDir);
+    await useCliServerAsync(serverId, cliPath, workDir);
     return true;
 }
+
 
 /**
  * Configure a JFrog CLI server for an Artifactory service connection that is expected to be named 'artifactoryConnection'.
@@ -561,13 +770,28 @@ async function configureDefaultJfrogServer(serverId, cliPath, workDir) {
  * @param cliPath - Path to JFrog CLI executable.
  * @param workDir - Working directory.
  */
-async function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
+function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
     let artifactoryService = tl.getInput('artifactoryConnection', true);
     const serverId = assembleUniqueServerId(usageType);
-    await configureArtifactoryCliServer(artifactoryService, serverId, cliPath, workDir);
-    await useCliServer(serverId, cliPath, workDir);
+    configureArtifactoryCliServer(artifactoryService, serverId, cliPath, workDir);
+    useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
+
+/**
+ * Async - Configure a JFrog CLI server for an Artifactory service connection that is expected to be named 'artifactoryConnection'.
+ * @param usageType - String that describes the server's use. Will be used to create a unique server ID.
+ * @param cliPath - Path to JFrog CLI executable.
+ * @param workDir - Working directory.
+ */
+async function configureDefaultArtifactoryServerAsync(usageType, cliPath, workDir) {
+    let artifactoryService = tl.getInput('artifactoryConnection', true);
+    const serverId = assembleUniqueServerId(usageType);
+    await configureArtifactoryCliServerAsync(artifactoryService, serverId, cliPath, workDir);
+    await useCliServerAsync(serverId, cliPath, workDir);
+    return serverId;
+}
+
 
 /**
  * Configure a JFrog CLI server for a Distribution service connection that is expected to be named 'distributionConnection'.
@@ -575,13 +799,28 @@ async function configureDefaultArtifactoryServer(usageType, cliPath, workDir) {
  * @param cliPath - Path to JFrog CLI executable.
  * @param workDir - Working directory.
  */
-async function configureDefaultDistributionServer(usageType, cliPath, workDir) {
+function configureDefaultDistributionServer(usageType, cliPath, workDir) {
     let distributionService = tl.getInput('distributionConnection', true);
     const serverId = assembleUniqueServerId(usageType);
-    await configureDistributionCliServer(distributionService, serverId, cliPath, workDir);
-    await useCliServer(serverId, cliPath, workDir);
+    configureDistributionCliServer(distributionService, serverId, cliPath, workDir);
+    useCliServer(serverId, cliPath, workDir);
     return serverId;
 }
+
+/**
+ * Async - Configure a JFrog CLI server for a Distribution service connection that is expected to be named 'distributionConnection'.
+ * @param usageType - String that describes the server's use. Will be used to create a unique server ID.
+ * @param cliPath - Path to JFrog CLI executable.
+ * @param workDir - Working directory.
+ */
+async function configureDefaultDistributionServerAsync(usageType, cliPath, workDir) {
+    let distributionService = tl.getInput('distributionConnection', true);
+    const serverId = assembleUniqueServerId(usageType);
+    await configureDistributionCliServerAsync(distributionService, serverId, cliPath, workDir);
+    await useCliServerAsync(serverId, cliPath, workDir);
+    return serverId;
+}
+
 
 /**
  * Configure a JFrog CLI server for a Xray service connection that is expected to be named 'xrayConnection'.
@@ -589,11 +828,25 @@ async function configureDefaultDistributionServer(usageType, cliPath, workDir) {
  * @param cliPath - Path to JFrog CLI executable.
  * @param workDir - Working directory.
  */
-async function configureDefaultXrayServer(usageType, cliPath, workDir) {
+function configureDefaultXrayServer(usageType, cliPath, workDir) {
     let xrayService = tl.getInput('xrayConnection', true);
     const serverId = assembleUniqueServerId(usageType);
-    await configureXrayCliServer(xrayService, serverId, cliPath, workDir);
-    await useCliServer(serverId, cliPath, workDir);
+    configureXrayCliServer(xrayService, serverId, cliPath, workDir);
+    useCliServer(serverId, cliPath, workDir);
+    return serverId;
+}
+
+/**
+ * Async - Configure a JFrog CLI server for a Xray service connection that is expected to be named 'xrayConnection'.
+ * @param usageType - String that describes the server's use. Will be used to create a unique server ID.
+ * @param cliPath - Path to JFrog CLI executable.
+ * @param workDir - Working directory.
+ */
+async function configureDefaultXrayServerAsync(usageType, cliPath, workDir) {
+    let xrayService = tl.getInput('xrayConnection', true);
+    const serverId = assembleUniqueServerId(usageType);
+    await configureXrayCliServerAsync(xrayService, serverId, cliPath, workDir);
+    await useCliServerAsync(serverId, cliPath, workDir);
     return serverId;
 }
 
@@ -602,7 +855,17 @@ async function configureDefaultXrayServer(usageType, cliPath, workDir) {
  * @returns {Buffer|string}
  * @throws In CLI execution failure.
  */
-async function useCliServer(serverId, cliPath, buildDir) {
+function useCliServer(serverId, cliPath, buildDir) {
+    const cliCommand = cliJoin(cliPath, jfrogCliConfigUseCommand, quote(serverId));
+    return executeCliCommand(cliCommand, buildDir);
+}
+
+/**
+ * Async - Use given serverId as default
+ * @returns {Buffer|string}
+ * @throws In CLI execution failure.
+ */
+async function useCliServerAsync(serverId, cliPath, buildDir) {
     const cliCommand = cliJoin(cliPath, jfrogCliConfigUseCommand, quote(serverId));
     return await executeCliCommandAsync(cliCommand, buildDir);
 }
@@ -613,7 +876,30 @@ async function useCliServer(serverId, cliPath, buildDir) {
  * @param buildDir - Build / Working directory
  * @param serverIdArray - Array of server IDs to remove
  */
-async function deleteCliServers(cliPath, buildDir, serverIdArray) {
+function deleteCliServers(cliPath, buildDir, serverIdArray) {
+    if (!serverIdArray) {
+        return;
+    }
+    for (let i = 0, len = serverIdArray.length; i < len; i++) {
+        try {
+            if (serverIdArray[i]) {
+                const deleteServerIDCommand = cliJoin(cliPath, jfrogCliConfigRmCommand, quote(serverIdArray[i]), '--quiet');
+                // This operation throws an exception in case of failure.
+                executeCliCommand(deleteServerIDCommand, buildDir);
+            }
+        } catch (deleteServersException) {
+            tl.setResult(tl.TaskResult.Failed, `Could not delete server id ${serverIdArray[i]} error: ${deleteServersException}`);
+        }
+    }
+}
+
+/**
+ * Async - Remove servers from the JFrog CLI config.
+ * @param cliPath - Path to JFrog CLI
+ * @param buildDir - Build / Working directory
+ * @param serverIdArray - Array of server IDs to remove
+ */
+async function deleteCliServersAsync(cliPath, buildDir, serverIdArray) {
     if (!serverIdArray) {
         return;
     }
@@ -749,6 +1035,62 @@ function runCbk(cliPath) {
     console.log('Running jfrog-cli from ' + cliPath);
     logCliVersionAndSetSelected(cliPath);
     runTaskCbk(cliPath);
+}
+
+function createCliDirs() {
+    if (!fs.existsSync(jfrogFolderPath)) {
+        try {
+            console.log('Creating JFrog CLI directory: ' + jfrogFolderPath);
+            fs.mkdirSync(jfrogFolderPath, { recursive: true });
+        } catch (error) {
+            const originalToolsDir = tl.getVariable('Agent.ToolsDirectory') || 'undefined';
+            console.error(
+                `Failed to create JFrog CLI directory. Original Agent.ToolsDirectory: ${originalToolsDir}, Attempted path: ${jfrogFolderPath}, Error: ${error.message}`,
+            );
+
+            // Try alternative approach: create directory without encoding
+            const fallbackPath = join(tl.getVariable('Agent.ToolsDirectory') || '', '_jf').replace(/"/g, '');
+            console.log('Attempting fallback path: ' + fallbackPath);
+            try {
+                fs.mkdirSync(fallbackPath, { recursive: true });
+                console.log('Successfully created directory using fallback path');
+                // Update the global variable to use the working path
+                jfrogFolderPath = fallbackPath;
+            } catch (fallbackError) {
+                throw new Error(
+                    `Unable to create JFrog CLI directory. Attempted paths: "${jfrogFolderPath}" and "${fallbackPath}". Original error: ${error.message}`,
+                );
+            }
+        }
+    }
+}
+
+function createCliDirs() {
+    if (!fs.existsSync(jfrogFolderPath)) {
+        try {
+            console.log('Creating JFrog CLI directory: ' + jfrogFolderPath);
+            fs.mkdirSync(jfrogFolderPath, { recursive: true });
+        } catch (error) {
+            const originalToolsDir = tl.getVariable('Agent.ToolsDirectory') || 'undefined';
+            console.error(
+                `Failed to create JFrog CLI directory. Original Agent.ToolsDirectory: ${originalToolsDir}, Attempted path: ${jfrogFolderPath}, Error: ${error.message}`,
+            );
+
+            // Try alternative approach: create directory without encoding
+            const fallbackPath = join(tl.getVariable('Agent.ToolsDirectory') || '', '_jf').replace(/"/g, '');
+            console.log('Attempting fallback path: ' + fallbackPath);
+            try {
+                fs.mkdirSync(fallbackPath, { recursive: true });
+                console.log('Successfully created directory using fallback path');
+                // Update the global variable to use the working path
+                jfrogFolderPath = fallbackPath;
+            } catch (fallbackError) {
+                throw new Error(
+                    `Unable to create JFrog CLI directory. Attempted paths: "${jfrogFolderPath}" and "${fallbackPath}". Original error: ${error.message}`,
+                );
+            }
+        }
+    }
 }
 
 async function createCliDirsAsync() {
@@ -991,10 +1333,25 @@ function encodePath(str) {
 }
 
 /**
- * Runs collect environment variables JFrog CLI command if includeEnvVars is configured to true.
+ *  Runs collect environment variables JFrog CLI command if includeEnvVars is configured to true.
  * @param cliPath - (String) - The cli path.
  */
-async function collectEnvVarsIfNeeded(cliPath) {
+function collectEnvVarsIfNeeded(cliPath) {
+    let includeEnvVars = tl.getBoolInput('includeEnvVars');
+    if (includeEnvVars) {
+        try {
+            collectEnvVars(cliPath);
+        } catch (ex) {
+            tl.setResult(tl.TaskResult.Failed, ex);
+        }
+    }
+}
+
+/**
+ * Async - Runs collect environment variables JFrog CLI command if includeEnvVars is configured to true.
+ * @param cliPath - (String) - The cli path.
+ */
+async function collectEnvVarsIfNeededAsync(cliPath) {
     let includeEnvVars = tl.getBoolInput('includeEnvVars');
     if (includeEnvVars) {
         try {
@@ -1004,6 +1361,7 @@ async function collectEnvVarsIfNeeded(cliPath) {
         }
     }
 }
+
 
 /**
  * Runs collect environment variables JFrog CLI command.
@@ -1066,14 +1424,14 @@ function assembleUniqueServerId(usageType) {
  * @param repoDeploy - Repository to use for deploying. Pass a falsy value to skip.
  * @returns {string[]}
  */
-async function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCommand, repoResolver, repoDeploy) {
+function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCommand, repoResolver, repoDeploy) {
     let cliCommand = cliJoin(cliPath, configCommand);
     let serverIdResolve;
     let serverIdDeploy;
     if (repoResolver) {
         // Configure Artifactory resolver server.
         const usageType = cmd + tl.getInput('command', true) + '_resolver';
-        serverIdResolve = await configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
+        serverIdResolve = configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
 
         // Add serverId and repo to config command.
         cliCommand = cliJoin(cliCommand, '--server-id-resolve=' + quote(serverIdResolve));
@@ -1082,7 +1440,49 @@ async function createBuildToolConfigFile(cliPath, cmd, requiredWorkDir, configCo
     if (repoDeploy) {
         // Configure Artifactory deployer server.
         const usageType = cmd + tl.getInput('command', true) + '_deployer';
-        serverIdDeploy = await configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
+        serverIdDeploy = configureDefaultArtifactoryServer(usageType, cliPath, requiredWorkDir);
+
+        // Add serverId and repo to config command.
+        cliCommand = cliJoin(cliCommand, '--server-id-deploy=' + quote(serverIdDeploy));
+        cliCommand = addStringParam(cliCommand, repoDeploy, 'repo-deploy', true);
+    }
+    // Execute cli.
+    try {
+        executeCliCommand(cliCommand, requiredWorkDir);
+        return [serverIdResolve, serverIdDeploy];
+    } catch (ex) {
+        tl.setResult(tl.TaskResult.Failed, ex);
+    }
+}
+
+/**
+ * Async - Run the corresponding JFrog CLI config command for the build tool used.
+ * Also configures a JFrog CLI server by using {@link configureDefaultArtifactoryServerAsync}.
+ * @param cliPath - Path to JFrog CLI executable.
+ * @param cmd - String to be used for the server ID.
+ * @param requiredWorkDir - Working directory.
+ * @param configCommand - JFrog CLI config command name.
+ * @param repoResolver - Repository to use for resolving. Pass a falsy value to skip.
+ * @param repoDeploy - Repository to use for deploying. Pass a falsy value to skip.
+ * @returns {string[]}
+ */
+async function createBuildToolConfigFileAsync(cliPath, cmd, requiredWorkDir, configCommand, repoResolver, repoDeploy) {
+    let cliCommand = cliJoin(cliPath, configCommand);
+    let serverIdResolve;
+    let serverIdDeploy;
+    if (repoResolver) {
+        // Configure Artifactory resolver server.
+        const usageType = cmd + tl.getInput('command', true) + '_resolver';
+        serverIdResolve = await configureDefaultArtifactoryServerAsync(usageType, cliPath, requiredWorkDir);
+
+        // Add serverId and repo to config command.
+        cliCommand = cliJoin(cliCommand, '--server-id-resolve=' + quote(serverIdResolve));
+        cliCommand = addStringParam(cliCommand, repoResolver, 'repo-resolve', true);
+    }
+    if (repoDeploy) {
+        // Configure Artifactory deployer server.
+        const usageType = cmd + tl.getInput('command', true) + '_deployer';
+        serverIdDeploy = await configureDefaultArtifactoryServerAsync(usageType, cliPath, requiredWorkDir);
 
         // Add serverId and repo to config command.
         cliCommand = cliJoin(cliCommand, '--server-id-deploy=' + quote(serverIdDeploy));
@@ -1119,11 +1519,12 @@ function getCurrentTimestamp() {
     return Math.floor(Date.now() / 1000);
 }
 
+
 /**
  * Removes the cli server config and env variables set in ToolsInstaller task.
  * @throws In CLI execution failure.
  */
-async function removeExtractorsDownloadVariables(cliPath, workDir) {
+function removeExtractorsDownloadVariables(cliPath, workDir) {
     let extractorsEnv = tl.getVariable(extractorsRemoteEnv);
     if (!extractorsEnv) {
         return;
@@ -1135,7 +1536,26 @@ async function removeExtractorsDownloadVariables(cliPath, workDir) {
     }
     const serverId = extractorsEnv.substring(0, ind);
     tl.setVariable(extractorsRemoteEnv, '');
-    await deleteCliServers(cliPath, workDir, [serverId]);
+    deleteCliServers(cliPath, workDir, [serverId]);
+}
+
+/**
+ * Async - Removes the cli server config and env variables set in ToolsInstaller task.
+ * @throws In CLI execution failure.
+ */
+async function removeExtractorsDownloadVariablesAsync(cliPath, workDir) {
+    let extractorsEnv = tl.getVariable(extractorsRemoteEnv);
+    if (!extractorsEnv) {
+        return;
+    }
+    let ind = extractorsEnv.lastIndexOf('/');
+    if (ind === -1) {
+        console.warn('Unexpected value for the "' + extractorsRemoteEnv + '" environment variable:' + 'expected to contain at least one "/"');
+        return;
+    }
+    const serverId = extractorsEnv.substring(0, ind);
+    tl.setVariable(extractorsRemoteEnv, '');
+    await deleteCliServersAsync(cliPath, workDir, [serverId]);
 }
 
 /**
@@ -1157,9 +1577,29 @@ function addServerIdOption(cliCommand, serverId) {
  * @param workDir - Working Directory
  * @param serverIdsArray - Array of server IDs to be removed.
  */
-async function taskDefaultCleanup(cliPath, workDir, serverIdsArray) {
+function taskDefaultCleanup(cliPath, workDir, serverIdsArray) {
     // Delete servers if exist.
-    await deleteCliServers(cliPath, workDir, serverIdsArray);
+    deleteCliServersAsync(cliPath, workDir, serverIdsArray);
+    try {
+        const configPath = join(workDir, '.jfrog', 'projects');
+        if (fs.existsSync(configPath)) {
+            tl.debug('Removing JFrog CLI build tool configuration...');
+            tl.rmRF(configPath);
+        }
+    } catch (cleanupException) {
+        tl.setResult(tl.TaskResult.Failed, cleanupException);
+    }
+}
+
+/**
+ * Async - Default cleanup of a task - removes JFrog CLI server and build tool configurations.
+ * @param cliPath - Path to JFrog CLI
+ * @param workDir - Working Directory
+ * @param serverIdsArray - Array of server IDs to be removed.
+ */
+async function taskDefaultCleanupAsync(cliPath, workDir, serverIdsArray) {
+    // Delete servers if exist.
+    await deleteCliServersAsync(cliPath, workDir, serverIdsArray);
     try {
         const configPath = join(workDir, '.jfrog', 'projects');
         if (await existsAsync(configPath)) {
