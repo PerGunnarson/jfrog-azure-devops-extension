@@ -220,7 +220,7 @@ async function executeCliTaskAsync(runTaskFunc, cliVersion, cliDownloadUrl, cliA
     }
 
     runTaskCbk = runTaskFunc;
-    await getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion)
+    await getCliPathAsync(cliDownloadUrl, cliAuthHandlers, cliVersion)
         .then(async (cliPath) => {
             runCbk(cliPath);
             await collectEnvVarsIfNeededAsync(cliPath);
