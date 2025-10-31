@@ -786,6 +786,23 @@ async function configureSpecificCliServerAsync(service, urlFlag, serverId, cliPa
  * @param workDir - Working directory.
  * @returns {boolean} - Whether the server was configured or not.
  */
+function configureDefaultJfrogServer(serverId, cliPath, workDir) {
+    let jfrogPlatformService = tl.getInput('jfrogPlatformConnection', false);
+    if (!jfrogPlatformService) {
+        return false;
+    }
+    configureJfrogCliServer(jfrogPlatformService, serverId, cliPath, workDir);
+    useCliServer(serverId, cliPath, workDir);
+    return true;
+}
+
+/**
+ * Async - Configure a JFrog CLI server for a JFrog platform service connection that is expected to be named 'jfrogPlatformConnection'.
+ * @param serverId - Requested server ID.
+ * @param cliPath - Path to JFrog CLI executable.
+ * @param workDir - Working directory.
+ * @returns {boolean} - Whether the server was configured or not.
+ */
 async function configureDefaultJfrogServerAsync(serverId, cliPath, workDir) {
     let jfrogPlatformService = tl.getInput('jfrogPlatformConnection', false);
     if (!jfrogPlatformService) {
