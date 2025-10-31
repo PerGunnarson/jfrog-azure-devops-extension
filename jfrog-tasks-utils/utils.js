@@ -86,6 +86,7 @@ let runTaskCbk = null;
 
 module.exports = {
     executeCliTask: executeCliTask,
+    executeCliTaskAsync: executeCliTaskAsync,
 
     executeCliCommand: executeCliCommand,
     executeCliCommandAsync: executeCliCommandAsync,
@@ -170,7 +171,39 @@ module.exports = {
  * @param cliDownloadUrl - [Optional, Default - releases.jfrog.io] - URL to download the required CLI executable from.
  * @param cliAuthHandlers - [Optional, Default - Anonymous] - Authentication handlers to download CLI with.
  */
-async function executeCliTask(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHandlers) {
+function executeCliTask(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHandlers) {
+    process.env.JFROG_CLI_HOME = jfrogFolderPath;
+    process.env.JFROG_CLI_OFFER_CONFIG = 'false';
+    process.env.JFROG_CLI_USER_AGENT = buildAgent + '/' + pluginVersion;
+    process.env.CI = 'true';
+
+    if (!cliVersion) {
+        // If CLI version is passed, use it. Otherwise, use requested version from env var if set. Else, default version.
+        cliVersion = tl.getVariable(pipelineRequestedCliVersionEnv) || defaultJfrogCliVersion;
+    }
+    // If unspecified, download from 'releases.jfrog.io' by default.
+    if (!cliDownloadUrl) {
+        cliDownloadUrl = buildReleasesDownloadUrl(cliVersion);
+        cliAuthHandlers = [];
+    }
+
+    runTaskCbk = runTaskFunc;
+    getCliPath(cliDownloadUrl, cliAuthHandlers, cliVersion)
+        .then((cliPath) => {
+            runCbk(cliPath);
+            collectEnvVarsIfNeeded(cliPath);
+        })
+        .catch((error) => tl.setResult(tl.TaskResult.Failed, 'Error occurred while executing task: ' + error));
+}
+
+/**
+ * Async - Executes a CLI task, downloads the CLI if necessary.
+ * @param runTaskFunc - Task to run.
+ * @param cliVersion - Specific CLI version to use in the current task execution.
+ * @param cliDownloadUrl - [Optional, Default - releases.jfrog.io] - URL to download the required CLI executable from.
+ * @param cliAuthHandlers - [Optional, Default - Anonymous] - Authentication handlers to download CLI with.
+ */
+async function executeCliTaskAsync(runTaskFunc, cliVersion, cliDownloadUrl, cliAuthHandlers) {
     process.env.JFROG_CLI_HOME = jfrogFolderPath;
     process.env.JFROG_CLI_OFFER_CONFIG = 'false';
     process.env.JFROG_CLI_USER_AGENT = buildAgent + '/' + pluginVersion;

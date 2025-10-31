@@ -5,19 +5,19 @@ const fs = require('fs').promises;
 async function runJfrogCliCommand(runTaskCbk) {
     // If no custom version requested, run with the version of the rest of the pipeline.
     if (!tl.getBoolInput('useCustomVersion')) {
-        return utils.executeCliTask(runTaskCbk);
+        return await utils.executeCliTaskAsync(runTaskCbk);
     }
 
     const cliVersion = tl.getInput('cliVersion', true);
     if (cliVersion.localeCompare('$(jfrogCliVersion)') === 0) {
-        return utils.executeCliTask(runTaskCbk);
+        return await utils.executeCliTaskAsync(runTaskCbk);
     }
 
     if (utils.compareVersions(utils.minCustomCliVersion, cliVersion) > 0) {
         throw new Error('Custom JFrog CLI Version must be at least ' + utils.minCustomCliVersion);
     }
 
-    return utils.executeCliTask(runTaskCbk, cliVersion);
+    return await utils.executeCliTaskAsync(runTaskCbk, cliVersion);
 }
 
 async function validateWorkDir(requiredWorkDir) {
@@ -48,7 +48,7 @@ async function runTaskCbk(cliPath) {
     process.env.JFROG_CLI_BUILD_NUMBER = tl.getVariable('Build.BuildNumber');
 
     const serverId = utils.assembleUniqueServerId('jfrog_cli_cmd');
-    await utils.configureDefaultJfrogServer(serverId, cliPath, requiredWorkDir);
+    await utils.configureDefaultJfrogServerAsync(serverId, cliPath, requiredWorkDir);
 
     const cliCommandsList = tl.getInput('command', true).split('\n');
     for (let cliCommand of cliCommandsList) {
@@ -72,7 +72,7 @@ async function runTaskCbk(cliPath) {
         await utils.executeCliCommandAsync(cliCommand, requiredWorkDir);
     }
 
-    await utils.taskDefaultCleanup(cliPath, requiredWorkDir, [serverId]);
+    await utils.taskDefaultCleanupAsync(cliPath, requiredWorkDir, [serverId]);
     return serverId;
 }
 
@@ -85,7 +85,7 @@ async function run() {
     } catch (err) {
         tl.setResult(tl.TaskResult.Failed, err.message || err);
     } finally {
-        if (serverId) utils.taskDefaultCleanup(null, null, [serverId]);
+        if (serverId) utils.taskDefaultCleanupAsync(null, null, [serverId]);
     }
 }
 
