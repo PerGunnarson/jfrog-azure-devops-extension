@@ -101,6 +101,7 @@ module.exports = {
     configureArtifactoryCliServerAsync,
     configureDefaultArtifactoryServer,
     configureDefaultArtifactoryServerAsync,
+    configureDefaultDistributionServer,
     configureDefaultDistributionServerAsync,
     configureDefaultJfrogServer,
     configureDefaultJfrogServerAsync,
