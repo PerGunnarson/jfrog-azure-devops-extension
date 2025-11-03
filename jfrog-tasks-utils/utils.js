@@ -363,43 +363,46 @@ function executeCliCommand(cliCommand, runningDir, options = {}) {
  * @throws In CLI execution failure.
  */
 async function executeCliCommandAsync(cliCommand, runningDir, options = {}) {
-    if (!(await existsAsync(runningDir))) {
-        throw new Error("JFrog CLI execution path doesn't exist: " + runningDir);
+     try {
+        // Kontrollera att mappen finns.
+        await fs.access(runningDir);
+    } catch {
+        throw new Error(`JFrog CLI execution path doesn't exist: ${runningDir}`);
     }
+
     if (!cliCommand) {
-        throw new Error('Cannot execute empty Cli command.');
+        throw new Error('Cannot execute empty CLI command.');
     }
 
     console.log('Executing JFrog CLI Command:\n' + maskSecrets(cliCommand));
 
     return new Promise((resolve, reject) => {
-        // Parse command and arguments
-        const args = cliCommand.split(' ').filter(arg => arg.length > 0);
-        const command = args[0];
-        const commandArgs = args.slice(1);
-
-        const spawnOptions = {
+        const child = spawn(cliCommand, {
             cwd: runningDir,
-            stdio: options.stdinSecret ? ['pipe', 'inherit', 'inherit'] : ['inherit', 'inherit', 'inherit']
-        };
-
-        const childProcess = spawn(command, commandArgs, spawnOptions);
-
-        if (options.stdinSecret) {
-            childProcess.stdin.write(options.stdinSecret);
-            childProcess.stdin.end();
-        }
-
-        childProcess.on('close', (code) => {
-            if (code === 0) {
-                resolve();
-            } else {
-                reject(new Error(`Command failed with exit code ${code}`));
-            }
+            shell: true,
+            stdio: [options.stdinSecret ? 'pipe' : 'inherit', options.withOutput ? 'pipe' : 'inherit', 'inherit']
         });
 
-        childProcess.on('error', (error) => {
-            reject(new Error(`Failed to start command: ${error.message}`));
+        let output = '';
+        if (options.withOutput) {
+            child.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+        }
+
+        if (options.stdinSecret) {
+            child.stdin.write(options.stdinSecret);
+            child.stdin.end();
+        }
+
+        child.on('error', (err) => reject(err));
+
+        child.on('close', (code) => {
+            if (code !== 0) {
+                reject(new Error(`CLI command failed with exit code ${code}`));
+            } else {
+                resolve(options.withOutput ? output.trim() : '');
+            }
         });
     });
 }
